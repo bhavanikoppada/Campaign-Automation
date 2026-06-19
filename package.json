@@ -1,0 +1,18 @@
+{
+  "name": "campaign-orchestrator",
+  "version": "1.0.0",
+  "description": "Parallel N8N campaign trigger server with WebSocket status streaming",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "uuid": "^10.0.0",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

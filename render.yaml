@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: campaign-orchestrator
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      # Add this env var in your N8N workflows so they know where to callback
+      # - key: ORCHESTRATOR_URL
+      #   value: https://campaign-orchestrator.onrender.com

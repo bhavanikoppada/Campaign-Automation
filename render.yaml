@@ -11,6 +11,12 @@ services:
         value: production
       - key: PORT
         value: 3000
-      # Add this env var in your N8N workflows so they know where to callback
+      - key: N8N_WEBHOOK_URL
+        value: https://academyss.app.n8n.cloud/webhook/campaign-trigger
+      - key: GOOGLE_SHEET_ID
+        value: 166dxm8lGoJu2L83JfYc11G5Y8cZZZeMMbSHpsUyV1kI
+      - key: CAMPAIGN_ID
+        value: scheduled-campaign
+      # Add in N8N HTTP Request callback node:
       # - key: ORCHESTRATOR_URL
       #   value: https://campaign-orchestrator.onrender.com

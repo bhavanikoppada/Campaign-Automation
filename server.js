@@ -4,10 +4,14 @@
  * Streams real-time status back to clients via WebSocket
  */
 
+require('dotenv').config();
+
 const express = require('express');
+const config = require('./config');
 const { WebSocketServer } = require('ws');
 const http = require('http');
 const { v4: uuidv4 } = require('uuid');
+const { scanAndTrigger, findDueCampaigns } = require('./lib/scheduler');
 
 const app = express();
 app.use(express.json());
@@ -125,6 +129,93 @@ app.post('/trigger-campaigns', async (req, res) => {
 });
 
 /**
+ * POST /trigger-scheduled
+ * Fire the configured N8N scheduled-campaign webhook with the Google Sheet ID.
+ *
+ * Body (all optional):
+ * { "sheetId": "...", "gid": 0, ...extra fields forwarded to N8N }
+ */
+app.post('/trigger-scheduled', async (req, res) => {
+  const sheetId = req.body.sheetId || config.googleSheetId;
+  const gid = req.body.gid ?? 0;
+
+  const campaign = {
+    id: config.campaignId,
+    webhookUrl: config.n8nWebhookUrl,
+    payload: {
+      sheetId,
+      spreadsheetId: sheetId,
+      gid,
+      ...req.body,
+    },
+  };
+
+  const batchId = uuidv4();
+  res.json({ batchId, campaignId: campaign.id, sheetId, gid, status: 'firing' });
+
+  broadcast({
+    type: 'batch_started',
+    batchId,
+    total: 1,
+    campaigns: [campaign.id],
+  });
+
+  const result = await triggerWebhook(campaign, batchId);
+
+  broadcast({
+    type: 'batch_complete',
+    batchId,
+    total: 1,
+    succeeded: result.status === 'triggered' ? 1 : 0,
+    failed: result.status === 'error' ? 1 : 0,
+    results: [result],
+  });
+});
+
+/**
+ * GET /scheduler/preview
+ * List rows that match Scheduler + Schedule and are due now (no webhook fired).
+ */
+app.get('/scheduler/preview', async (_req, res) => {
+  try {
+    const { scanned, due } = await findDueCampaigns();
+    res.json({ scanned, dueCount: due.length, due });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /scan-scheduler
+ * Manually scan the Google Sheet and fire N8N webhooks for due scheduled rows.
+ */
+app.post('/scan-scheduler', async (_req, res) => {
+  try {
+    const result = await scanAndTrigger(triggerWebhook, broadcast);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /config
+ * Show current campaign defaults (no secrets).
+ */
+app.get('/config', (_req, res) => {
+  res.json({
+    campaignId: config.campaignId,
+    n8nWebhookUrl: config.n8nWebhookUrl,
+    googleSheetId: config.googleSheetId,
+    sheetGid: config.sheetGid,
+    schedulerEnabled: config.schedulerEnabled,
+    schedulerPollMs: config.schedulerPollMs,
+    schedulerTimezone: config.schedulerTimezone,
+    requireApproved: config.requireApproved,
+  });
+});
+
+/**
  * POST /callback/:batchId/:campaignId
  * N8N calls this at the END of each workflow to report completion.
  *
@@ -154,4 +245,24 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', clients: clients.size
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Orchestrator listening on :${PORT}`));
+server.listen(PORT, () => {
+  console.log(`Orchestrator listening on :${PORT}`);
+
+  if (config.schedulerEnabled) {
+    console.log(`Scheduler polling every ${config.schedulerPollMs / 1000}s`);
+
+    const runScan = async () => {
+      try {
+        const result = await scanAndTrigger(triggerWebhook, broadcast);
+        if (result.triggered > 0) {
+          console.log(`Scheduler fired ${result.triggered} campaign(s), batch ${result.batchId}`);
+        }
+      } catch (err) {
+        console.error('Scheduler scan failed:', err.message);
+      }
+    };
+
+    runScan();
+    setInterval(runScan, config.schedulerPollMs);
+  }
+});

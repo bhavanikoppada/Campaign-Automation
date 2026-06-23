@@ -2,13 +2,13 @@
  * Campaign defaults — override via environment variables or .env (local dev).
  *
  * N8N note: /webhook-test/ only works while "Listen for test event" is active in the editor.
- * For live/production runs, use /webhook/campaign-trigger (activate the workflow first).
+ * For live/production runs, use /webhook/campaign-trigger-v2 (activate the workflow first).
  */
 
 module.exports = {
   n8nWebhookUrl:
     process.env.N8N_WEBHOOK_URL ||
-    'https://academyss.app.n8n.cloud/webhook-test/campaign-trigger',
+    'https://academyss.app.n8n.cloud/webhook/campaign-trigger-v2',
 
   googleSheetId:
     process.env.GOOGLE_SHEET_ID ||
@@ -25,4 +25,5 @@ module.exports = {
   schedulerWindowMs: Number(process.env.SCHEDULER_WINDOW_MS || 5 * 60_000),
   requireApproved: process.env.REQUIRE_APPROVED !== 'false',
   doneStatus: process.env.DONE_STATUS || 'Done',
+  triggeredStatus: process.env.TRIGGERED_STATUS || 'Triggered',
 };

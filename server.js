@@ -178,8 +178,16 @@ app.post('/trigger-scheduled', async (req, res) => {
  */
 app.get('/scheduler/preview', async (_req, res) => {
   try {
-    const { scanned, due } = await findDueCampaigns();
-    res.json({ scanned, dueCount: due.length, due });
+    const { scanned, instant, scheduledFire, scheduledComplete } = await findDueCampaigns();
+    res.json({
+      scanned,
+      instantCount: instant.length,
+      scheduledFireCount: scheduledFire.length,
+      scheduledCompleteCount: scheduledComplete.length,
+      instant,
+      scheduledFire,
+      scheduledComplete,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -212,6 +220,8 @@ app.get('/config', (_req, res) => {
     schedulerPollMs: config.schedulerPollMs,
     schedulerTimezone: config.schedulerTimezone,
     requireApproved: config.requireApproved,
+    doneStatus: config.doneStatus,
+    triggeredStatus: config.triggeredStatus,
   });
 });
 
@@ -254,8 +264,10 @@ server.listen(PORT, () => {
     const runScan = async () => {
       try {
         const result = await scanAndTrigger(triggerWebhook, broadcast);
-        if (result.triggered > 0) {
-          console.log(`Scheduler fired ${result.triggered} campaign(s), batch ${result.batchId}`);
+        if (result.triggered > 0 || result.scheduledCompleted > 0) {
+          console.log(
+            `Scan: instant=${result.instantFired}, scheduled=${result.scheduledFired}, completed=${result.scheduledCompleted}`
+          );
         }
       } catch (err) {
         console.error('Scheduler scan failed:', err.message);

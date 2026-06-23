@@ -213,6 +213,7 @@ app.post('/scan-scheduler', async (_req, res) => {
 app.get('/config', (_req, res) => {
   res.json({
     campaignId: config.campaignId,
+    n8nWorkflowId: config.n8nWorkflowId,
     n8nWebhookUrl: config.n8nWebhookUrl,
     googleSheetId: config.googleSheetId,
     sheetGid: config.sheetGid,

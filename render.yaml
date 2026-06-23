@@ -13,6 +13,8 @@ services:
         value: 3000
       - key: N8N_WEBHOOK_URL
         value: https://academyss.app.n8n.cloud/webhook/campaign-trigger-v2
+      - key: N8N_WORKFLOW_ID
+        value: a0ltWWzgYCReK63w
       - key: GOOGLE_SHEET_ID
         value: 166dxm8lGoJu2L83JfYc11G5Y8cZZZeMMbSHpsUyV1kI
       - key: CAMPAIGN_ID

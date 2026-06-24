@@ -23,6 +23,13 @@ module.exports = {
 
   sheetGid: Number(process.env.SHEET_GID || 0),
 
+  get googleSheetUrl() {
+    if (process.env.GOOGLE_SHEET_URL) return process.env.GOOGLE_SHEET_URL;
+    const id = process.env.GOOGLE_SHEET_ID || '166dxm8lGoJu2L83JfYc11G5Y8cZZZeMMbSHpsUyV1kI';
+    const gid = process.env.SHEET_GID || 0;
+    return `https://docs.google.com/spreadsheets/d/${id}/edit?gid=${gid}#gid=${gid}`;
+  },
+
   campaignId: process.env.CAMPAIGN_ID || 'scheduled-campaign',
 
   // Poll sheet every N ms for Run Trigger=Scheduler + Run Type=Schedule rows

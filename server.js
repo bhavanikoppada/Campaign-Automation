@@ -12,6 +12,7 @@ const { WebSocketServer } = require('ws');
 const http = require('http');
 const { v4: uuidv4 } = require('uuid');
 const { scanAndTrigger, findDueCampaigns } = require('./lib/scheduler');
+const { checkConnection } = require('./lib/sheets');
 
 const app = express();
 app.use(express.json());
@@ -145,6 +146,8 @@ app.post('/trigger-scheduled', async (req, res) => {
     payload: {
       sheetId,
       spreadsheetId: sheetId,
+      sheetUrl: config.googleSheetUrl,
+      googleSheetUrl: config.googleSheetUrl,
       gid,
       ...req.body,
     },
@@ -207,17 +210,31 @@ app.post('/scan-scheduler', async (_req, res) => {
 });
 
 /**
+ * GET /sheet/status
+ * Check if Google Sheet is configured and API credentials can read it.
+ */
+app.get('/sheet/status', async (_req, res) => {
+  const status = await checkConnection();
+  res.json(status);
+});
+
+/**
  * GET /config
  * Show current campaign defaults (no secrets).
  */
-app.get('/config', (_req, res) => {
+app.get('/config', async (_req, res) => {
+  const sheetStatus = await checkConnection();
   res.json({
     campaignId: config.campaignId,
     n8nWorkflowId: config.n8nWorkflowId,
     n8nWebhookUrl: config.n8nWebhookUrl,
     n8nWebhookTestUrl: config.n8nWebhookTestUrl,
     googleSheetId: config.googleSheetId,
+    googleSheetUrl: config.googleSheetUrl,
     sheetGid: config.sheetGid,
+    sheetConnected: sheetStatus.connected,
+    sheetRowCount: sheetStatus.rowCount ?? null,
+    sheetError: sheetStatus.error ?? null,
     schedulerEnabled: config.schedulerEnabled,
     schedulerPollMs: config.schedulerPollMs,
     schedulerTimezone: config.schedulerTimezone,

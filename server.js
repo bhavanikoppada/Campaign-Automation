@@ -215,6 +215,7 @@ app.get('/config', (_req, res) => {
     campaignId: config.campaignId,
     n8nWorkflowId: config.n8nWorkflowId,
     n8nWebhookUrl: config.n8nWebhookUrl,
+    n8nWebhookTestUrl: config.n8nWebhookTestUrl,
     googleSheetId: config.googleSheetId,
     sheetGid: config.sheetGid,
     schedulerEnabled: config.schedulerEnabled,

@@ -13,6 +13,10 @@ module.exports = {
     process.env.N8N_WEBHOOK_URL ||
     'https://academyss.app.n8n.cloud/webhook/campaign-trigger-v2',
 
+  n8nWebhookTestUrl:
+    process.env.N8N_WEBHOOK_TEST_URL ||
+    'https://academyss.app.n8n.cloud/webhook-test/campaign-trigger-v2',
+
   googleSheetId:
     process.env.GOOGLE_SHEET_ID ||
     '166dxm8lGoJu2L83JfYc11G5Y8cZZZeMMbSHpsUyV1kI',

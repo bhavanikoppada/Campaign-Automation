@@ -229,6 +229,8 @@ app.get('/config', async (_req, res) => {
     n8nWorkflowId: config.n8nWorkflowId,
     n8nWebhookUrl: config.n8nWebhookUrl,
     n8nWebhookTestUrl: config.n8nWebhookTestUrl,
+    n8nScheduledWebhookUrl: config.n8nScheduledWebhookUrl,
+    n8nScheduledWebhookTestUrl: config.n8nScheduledWebhookTestUrl,
     googleSheetId: config.googleSheetId,
     googleSheetUrl: config.googleSheetUrl,
     sheetGid: config.sheetGid,

@@ -2,8 +2,14 @@
  * Campaign defaults — override via environment variables or .env (local dev).
  *
  * N8N workflow: https://academyss.app.n8n.cloud/workflow/a0ltWWzgYCReK63w
- * Webhook (production): https://academyss.app.n8n.cloud/webhook/campaign-trigger-v2
- * Webhook (manual test): https://academyss.app.n8n.cloud/webhook-test/campaign-trigger-v2
+ *
+ * Instant (Run) webhook:
+ *   production: https://academyss.app.n8n.cloud/webhook/campaign-trigger-v2
+ *   test:       https://academyss.app.n8n.cloud/webhook-test/campaign-trigger-v2
+ *
+ * Scheduled (Scheduler) webhook:
+ *   production: https://academyss.app.n8n.cloud/webhook/scheduled-campaign-v1
+ *   test:       https://academyss.app.n8n.cloud/webhook-test/scheduled-campaign-v1
  */
 
 module.exports = {
@@ -16,6 +22,14 @@ module.exports = {
   n8nWebhookTestUrl:
     process.env.N8N_WEBHOOK_TEST_URL ||
     'https://academyss.app.n8n.cloud/webhook-test/campaign-trigger-v2',
+
+  n8nScheduledWebhookUrl:
+    process.env.N8N_SCHEDULED_WEBHOOK_URL ||
+    'https://academyss.app.n8n.cloud/webhook/scheduled-campaign-v1',
+
+  n8nScheduledWebhookTestUrl:
+    process.env.N8N_SCHEDULED_WEBHOOK_TEST_URL ||
+    'https://academyss.app.n8n.cloud/webhook-test/scheduled-campaign-v1',
 
   googleSheetId:
     process.env.GOOGLE_SHEET_ID ||

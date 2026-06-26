@@ -17,6 +17,8 @@ services:
         value: Sheet1
       - key: N8N_WEBHOOK
         value: https://academyss.app.n8n.cloud/webhook/scheduled-campaign-v1
+      - key: N8N_WEBHOOK_TEST
+        value: https://academyss.app.n8n.cloud/webhook-test/scheduled-campaign-v1
       - key: POLL_MS
         value: 60000
       # Set in Render dashboard (secret):

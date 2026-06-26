@@ -16,21 +16,35 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const CFG = {
-  sheetId   : process.env.SHEET_ID     || '166dxm8lGoJu2L83JfYc11G5Y8cZZZeMMbSHpsUyV1kI',
-  sheetName : process.env.SHEET_NAME   || 'Sheet1',
-  n8nWebhook: process.env.N8N_WEBHOOK  || 'https://academyss.app.n8n.cloud/webhook/scheduled-campaign-v1',
-  pollMs    : parseInt(process.env.POLL_MS || '60000'),
-  port      : parseInt(process.env.PORT    || '3000'),
+  sheetId       : process.env.SHEET_ID          || '166dxm8lGoJu2L83JfYc11G5Y8cZZZeMMbSHpsUyV1kI',
+  sheetName     : process.env.SHEET_NAME        || 'Sheet1',
+  // Production webhook: works 24/7 once the workflow is Active. Runs show in N8N "Executions".
+  n8nWebhook    : process.env.N8N_WEBHOOK       || 'https://academyss.app.n8n.cloud/webhook/scheduled-campaign-v1',
+  // Test webhook: animates the canvas live, but only fires once after you click "Execute workflow".
+  n8nWebhookTest: process.env.N8N_WEBHOOK_TEST  || 'https://academyss.app.n8n.cloud/webhook-test/scheduled-campaign-v1',
+  pollMs        : parseInt(process.env.POLL_MS  || '60000'),
+  port          : parseInt(process.env.PORT     || '3000'),
 };
+
+// Pick the webhook URL by mode. mode='test' → test webhook (canvas animates,
+// requires clicking "Execute workflow" in N8N first). Anything else → production.
+function webhookFor(mode) {
+  return mode === 'test' ? CFG.n8nWebhookTest : CFG.n8nWebhook;
+}
 
 // ─── Google Sheets ─────────────────────────────────────────────────────────────
 function buildAuth() {
+  const scopes = ['https://www.googleapis.com/auth/spreadsheets'];
   const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!raw) throw new Error('Env GOOGLE_SERVICE_ACCOUNT_JSON is not set');
-  return new google.auth.GoogleAuth({
-    credentials: JSON.parse(raw),
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  });
+  if (raw) {
+    return new google.auth.GoogleAuth({ credentials: JSON.parse(raw), scopes });
+  }
+  // Fallback for local dev: a service account key file on disk.
+  const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (keyFile) {
+    return new google.auth.GoogleAuth({ keyFile, scopes });
+  }
+  throw new Error('Set GOOGLE_SERVICE_ACCOUNT_JSON (inline) or GOOGLE_APPLICATION_CREDENTIALS (file path)');
 }
 
 let _hdr = null; // cached header row
@@ -112,7 +126,13 @@ async function patchRow(rowNumber, updates) {
 // ─── REST API ─────────────────────────────────────────────────────────────────
 
 app.get('/api/health', (_, res) =>
-  res.json({ ok: true, ts: new Date().toISOString() })
+  res.json({
+    ok: true,
+    ts: new Date().toISOString(),
+    n8nWebhook: CFG.n8nWebhook,
+    n8nWebhookTest: CFG.n8nWebhookTest,
+    sheetId: CFG.sheetId,
+  })
 );
 
 // GET all campaigns
@@ -126,15 +146,41 @@ app.get('/api/campaigns', async (req, res) => {
   }
 });
 
-// POST fire N8N webhook for this specific campaign
+// POST fire N8N webhook for this specific campaign.
+// Optional ?mode=test (or body { "mode": "test" }) hits the test webhook so the
+// N8N canvas animates — you must click "Execute workflow" in N8N right before.
 app.post('/api/campaigns/:row/send-test', async (req, res) => {
   const row = parseInt(req.params.row);
   if (isNaN(row)) return res.status(400).json({ ok: false, error: 'Invalid row number' });
+  const mode = req.query.mode || req.body?.mode;
+  const url = webhookFor(mode);
   try {
-    await axios.post(CFG.n8nWebhook, { row_number: row }, { timeout: 10_000 });
-    res.json({ ok: true, message: 'Test email triggered successfully!' });
+    await axios.post(url, { row_number: row }, { timeout: 10_000 });
+    res.json({ ok: true, message: 'Triggered successfully!', mode: mode === 'test' ? 'test' : 'production', webhook: url });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    const status = e.response?.status;
+    const hint = status === 404 && mode === 'test'
+      ? 'Test webhook not registered. In N8N click "Execute workflow" first, then retry (test mode fires once per click).'
+      : undefined;
+    res.status(500).json({ ok: false, error: e.message, hint });
+  }
+});
+
+// POST generic trigger — body: { "row_number": 177, "mode": "test" | "production" }
+app.post('/api/trigger', async (req, res) => {
+  const rowNumber = parseInt(req.body?.row_number);
+  if (isNaN(rowNumber)) return res.status(400).json({ ok: false, error: 'row_number is required' });
+  const mode = req.body?.mode;
+  const url = webhookFor(mode);
+  try {
+    const r = await axios.post(url, { row_number: rowNumber }, { timeout: 10_000 });
+    res.json({ ok: true, mode: mode === 'test' ? 'test' : 'production', webhook: url, n8n: r.data });
+  } catch (e) {
+    const status = e.response?.status;
+    const hint = status === 404 && mode === 'test'
+      ? 'Test webhook not registered. In N8N click "Execute workflow" first, then retry (test mode fires once per click).'
+      : undefined;
+    res.status(500).json({ ok: false, error: e.message, hint });
   }
 });
 

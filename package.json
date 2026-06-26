@@ -1,18 +1,17 @@
 {
-  "name": "campaign-orchestrator",
-  "version": "1.0.0",
-  "description": "Parallel N8N campaign trigger server with WebSocket status streaming",
+  "name": "nxtwave-campaign-manager",
+  "version": "2.0.0",
+  "description": "NxtWave Campaign Manager — dashboard + N8N orchestrator",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js"
   },
   "dependencies": {
+    "axios": "^1.7.2",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "googleapis": "^144.0.0",
-    "uuid": "^10.0.0",
-    "ws": "^8.18.0"
+    "googleapis": "^140.0.0"
   },
   "engines": {
     "node": ">=18"

@@ -1,301 +1,226 @@
-/**
- * Campaign Orchestrator Server
- * Triggers multiple N8N webhook workflows in parallel
- * Streams real-time status back to clients via WebSocket
- */
-
+// ─────────────────────────────────────────────────────────────────────────────
+//  NxtWave Campaign Manager — server.js
+//  • Serves the dashboard UI (public/index.html)
+//  • REST API for campaign list, send-test, approve, reject
+//  • Background poller fires N8N webhooks at test_time
+// ─────────────────────────────────────────────────────────────────────────────
 require('dotenv').config();
-
-const express = require('express');
-const config = require('./config');
-const { WebSocketServer } = require('ws');
-const http = require('http');
-const { v4: uuidv4 } = require('uuid');
-const { scanAndTrigger, findDueCampaigns } = require('./lib/scheduler');
-const { checkConnection } = require('./lib/sheets');
+const express    = require('express');
+const { google } = require('googleapis');
+const axios      = require('axios');
+const path       = require('path');
 
 const app = express();
 app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+// ─── Config ───────────────────────────────────────────────────────────────────
+const CFG = {
+  sheetId   : process.env.SHEET_ID     || '166dxm8lGoJu2L83JfYc11G5Y8cZZZeMMbSHpsUyV1kI',
+  sheetName : process.env.SHEET_NAME   || 'Sheet1',
+  n8nWebhook: process.env.N8N_WEBHOOK  || 'https://academyss.app.n8n.cloud/webhook/scheduled-campaign-v1',
+  pollMs    : parseInt(process.env.POLL_MS || '60000'),
+  port      : parseInt(process.env.PORT    || '3000'),
+};
 
-// ─── WebSocket client registry ──────────────────────────────────────────────
-
-const clients = new Map(); // clientId → ws
-
-wss.on('connection', (ws, req) => {
-  const clientId = uuidv4();
-  clients.set(clientId, ws);
-
-  ws.send(JSON.stringify({ type: 'connected', clientId }));
-
-  ws.on('close', () => clients.delete(clientId));
-  ws.on('error', () => clients.delete(clientId));
-});
-
-function broadcast(event) {
-  const msg = JSON.stringify({ ...event, ts: Date.now() });
-  for (const ws of clients.values()) {
-    if (ws.readyState === 1 /* OPEN */) ws.send(msg);
-  }
+// ─── Google Sheets ─────────────────────────────────────────────────────────────
+function buildAuth() {
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!raw) throw new Error('Env GOOGLE_SERVICE_ACCOUNT_JSON is not set');
+  return new google.auth.GoogleAuth({
+    credentials: JSON.parse(raw),
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  });
 }
 
-// ─── N8N webhook trigger ─────────────────────────────────────────────────────
+let _hdr = null; // cached header row
 
-async function triggerWebhook(campaign, batchId) {
-  const { id, webhookUrl, payload = {} } = campaign;
-
-  broadcast({ type: 'campaign_triggering', batchId, campaignId: id });
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000); // 30s timeout
-
-  try {
-    const res = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ campaignId: id, batchId, ...payload }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeout);
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`HTTP ${res.status}: ${text}`);
-    }
-
-    const result = await res.json().catch(() => ({}));
-
-    broadcast({ type: 'campaign_triggered', batchId, campaignId: id, executionId: result.executionId });
-    return { id, status: 'triggered', executionId: result.executionId };
-
-  } catch (err) {
-    clearTimeout(timeout);
-    const message = err.name === 'AbortError' ? 'Timeout after 30s' : err.message;
-    broadcast({ type: 'campaign_error', batchId, campaignId: id, error: message });
-    return { id, status: 'error', error: message };
-  }
+async function sheetsClient() {
+  const client = await buildAuth().getClient();
+  return google.sheets({ version: 'v4', auth: client });
 }
 
-// ─── Routes ──────────────────────────────────────────────────────────────────
+async function headers(sheets) {
+  if (_hdr) return _hdr;
+  const r = await sheets.spreadsheets.values.get({
+    spreadsheetId: CFG.sheetId,
+    range: `${CFG.sheetName}!1:1`,
+  });
+  _hdr = r.data.values?.[0] || [];
+  return _hdr;
+}
 
-/**
- * POST /trigger-campaigns
- * Fire multiple N8N workflows in parallel.
- *
- * Body:
- * {
- *   campaigns: [
- *     { id: "promo-june", webhookUrl: "https://your-n8n/webhook/abc", payload: {} },
- *     { id: "webpush-001", webhookUrl: "https://your-n8n/webhook/xyz", payload: {} }
- *   ]
- * }
- */
-app.post('/trigger-campaigns', async (req, res) => {
-  const { campaigns } = req.body;
+// Read all campaign rows
+async function getCampaigns() {
+  const s = await sheetsClient();
+  const r = await s.spreadsheets.values.get({
+    spreadsheetId: CFG.sheetId,
+    range: CFG.sheetName,
+  });
+  const [hdrs, ...rows] = r.data.values || [[]];
+  _hdr = hdrs;
+  return rows
+    .map((row, i) => {
+      const obj = { row_number: i + 2 };
+      hdrs.forEach((h, j) => { obj[h] = (row[j] ?? ''); });
+      return obj;
+    })
+    .filter(r => r.subject || r.channel);
+}
 
-  if (!Array.isArray(campaigns) || campaigns.length === 0) {
-    return res.status(400).json({ error: '`campaigns` must be a non-empty array' });
-  }
+// Column index → letter (1=A, 27=AA …)
+function colLetter(n) {
+  let s = '';
+  while (n > 0) { s = String.fromCharCode(64 + ((n - 1) % 26 + 1)) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
 
-  for (const c of campaigns) {
-    if (!c.id || !c.webhookUrl) {
-      return res.status(400).json({ error: 'Each campaign needs `id` and `webhookUrl`' });
+// Patch specific columns of a row without touching others
+async function patchRow(rowNumber, updates) {
+  const s = await sheetsClient();
+  await headers(s);
+  const cur = await s.spreadsheets.values.get({
+    spreadsheetId: CFG.sheetId,
+    range: `${CFG.sheetName}!A${rowNumber}:ZZ${rowNumber}`,
+  });
+  const row = [...(cur.data.values?.[0] || [])];
+  while (row.length < _hdr.length) row.push('');
+
+  for (const [key, val] of Object.entries(updates)) {
+    let idx = _hdr.indexOf(key);
+    if (idx === -1) {
+      _hdr.push(key);
+      await s.spreadsheets.values.update({
+        spreadsheetId: CFG.sheetId,
+        range: `${CFG.sheetName}!${colLetter(_hdr.length)}1`,
+        valueInputOption: 'USER_ENTERED',
+        resource: { values: [[key]] },
+      });
+      row.push(val);
+    } else {
+      row[idx] = val;
     }
   }
-
-  const batchId = uuidv4();
-
-  // Respond immediately so client has the batchId to track via WebSocket
-  res.json({ batchId, total: campaigns.length, status: 'firing' });
-
-  broadcast({ type: 'batch_started', batchId, total: campaigns.length, campaigns: campaigns.map(c => c.id) });
-
-  // ← All webhooks fire at the same time
-  const results = await Promise.all(campaigns.map(c => triggerWebhook(c, batchId)));
-
-  const failed = results.filter(r => r.status === 'error');
-  const succeeded = results.filter(r => r.status === 'triggered');
-
-  broadcast({
-    type: 'batch_complete',
-    batchId,
-    total: campaigns.length,
-    succeeded: succeeded.length,
-    failed: failed.length,
-    results,
+  await s.spreadsheets.values.update({
+    spreadsheetId: CFG.sheetId,
+    range: `${CFG.sheetName}!A${rowNumber}`,
+    valueInputOption: 'USER_ENTERED',
+    resource: { values: [row] },
   });
-});
+}
 
-/**
- * POST /trigger-scheduled
- * Fire the configured N8N scheduled-campaign webhook with the Google Sheet ID.
- *
- * Body (all optional):
- * { "sheetId": "...", "gid": 0, ...extra fields forwarded to N8N }
- */
-app.post('/trigger-scheduled', async (req, res) => {
-  const sheetId = req.body.sheetId || config.googleSheetId;
-  const gid = req.body.gid ?? 0;
+// ─── REST API ─────────────────────────────────────────────────────────────────
 
-  const campaign = {
-    id: config.campaignId,
-    webhookUrl: config.n8nWebhookUrl,
-    payload: {
-      sheetId,
-      spreadsheetId: sheetId,
-      sheetUrl: config.googleSheetUrl,
-      googleSheetUrl: config.googleSheetUrl,
-      gid,
-      ...req.body,
-    },
-  };
+app.get('/api/health', (_, res) =>
+  res.json({ ok: true, ts: new Date().toISOString() })
+);
 
-  const batchId = uuidv4();
-  res.json({ batchId, campaignId: campaign.id, sheetId, gid, status: 'firing' });
-
-  broadcast({
-    type: 'batch_started',
-    batchId,
-    total: 1,
-    campaigns: [campaign.id],
-  });
-
-  const result = await triggerWebhook(campaign, batchId);
-
-  broadcast({
-    type: 'batch_complete',
-    batchId,
-    total: 1,
-    succeeded: result.status === 'triggered' ? 1 : 0,
-    failed: result.status === 'error' ? 1 : 0,
-    results: [result],
-  });
-});
-
-/**
- * GET /scheduler/preview
- * List rows that match Scheduler + Schedule and are due now (no webhook fired).
- */
-app.get('/scheduler/preview', async (_req, res) => {
+// GET all campaigns
+app.get('/api/campaigns', async (req, res) => {
   try {
-    const { scanned, instant, scheduledFire, scheduledComplete } = await findDueCampaigns();
-    res.json({
-      scanned,
-      instantCount: instant.length,
-      scheduledFireCount: scheduledFire.length,
-      scheduledCompleteCount: scheduledComplete.length,
-      instant,
-      scheduledFire,
-      scheduledComplete,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    const data = await getCampaigns();
+    res.json({ ok: true, data, count: data.length });
+  } catch (e) {
+    console.error('[/api/campaigns]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-/**
- * POST /scan-scheduler
- * Manually scan the Google Sheet and fire N8N webhooks for due scheduled rows.
- */
-app.post('/scan-scheduler', async (_req, res) => {
+// POST fire N8N webhook for this specific campaign
+app.post('/api/campaigns/:row/send-test', async (req, res) => {
+  const row = parseInt(req.params.row);
+  if (isNaN(row)) return res.status(400).json({ ok: false, error: 'Invalid row number' });
   try {
-    const result = await scanAndTrigger(triggerWebhook, broadcast);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    await axios.post(CFG.n8nWebhook, { row_number: row }, { timeout: 10_000 });
+    res.json({ ok: true, message: 'Test email triggered successfully!' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-/**
- * GET /sheet/status
- * Check if Google Sheet is configured and API credentials can read it.
- */
-app.get('/sheet/status', async (_req, res) => {
-  const status = await checkConnection();
-  res.json(status);
+// POST approve — calls N8N resumeUrl stored in "Resume URL" column
+app.post('/api/campaigns/:row/approve', async (req, res) => {
+  const row = parseInt(req.params.row);
+  try {
+    const all = await getCampaigns();
+    const c = all.find(x => x.row_number === row);
+    if (!c) return res.status(404).json({ ok: false, error: 'Campaign not found' });
+
+    const url = c['Resume URL'];
+    if (!url) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Resume URL not found in sheet. See setup: N8N must write $execution.resumeUrl to the "Resume URL" column.',
+      });
+    }
+    await axios.get(`${url}&action=approve`, { timeout: 10_000 });
+    res.json({ ok: true, message: 'Campaign approved!' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
-/**
- * GET /config
- * Show current campaign defaults (no secrets).
- */
-app.get('/config', async (_req, res) => {
-  const sheetStatus = await checkConnection();
-  res.json({
-    campaignId: config.campaignId,
-    n8nWorkflowId: config.n8nWorkflowId,
-    n8nWebhookUrl: config.n8nWebhookUrl,
-    n8nWebhookTestUrl: config.n8nWebhookTestUrl,
-    n8nScheduledWebhookUrl: config.n8nScheduledWebhookUrl,
-    n8nScheduledWebhookTestUrl: config.n8nScheduledWebhookTestUrl,
-    googleSheetId: config.googleSheetId,
-    googleSheetUrl: config.googleSheetUrl,
-    sheetGid: config.sheetGid,
-    sheetConnected: sheetStatus.connected,
-    sheetRowCount: sheetStatus.rowCount ?? null,
-    sheetError: sheetStatus.error ?? null,
-    schedulerEnabled: config.schedulerEnabled,
-    schedulerPollMs: config.schedulerPollMs,
-    schedulerTimezone: config.schedulerTimezone,
-    requireApproved: config.requireApproved,
-    doneStatus: config.doneStatus,
-    triggeredStatus: config.triggeredStatus,
-  });
+// POST reject / needs modification
+app.post('/api/campaigns/:row/reject', async (req, res) => {
+  const row = parseInt(req.params.row);
+  try {
+    const all = await getCampaigns();
+    const c = all.find(x => x.row_number === row);
+    if (!c) return res.status(404).json({ ok: false, error: 'Campaign not found' });
+
+    const url = c['Resume URL'];
+    if (!url) return res.status(400).json({ ok: false, error: 'Resume URL not found in sheet.' });
+
+    await axios.get(`${url}&action=modify`, { timeout: 10_000 });
+    res.json({ ok: true, message: 'Marked as Needs Modification.' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
-/**
- * POST /callback/:batchId/:campaignId
- * N8N calls this at the END of each workflow to report completion.
- *
- * Add an HTTP Request node at the end of your N8N workflow:
- *   URL: {{ $env.ORCHESTRATOR_URL }}/callback/{{ $json.batchId }}/{{ $json.campaignId }}
- *   Method: POST
- *   Body: { "emailsSent": 1200, "status": "done" }
- */
-app.post('/callback/:batchId/:campaignId', (req, res) => {
-  const { batchId, campaignId } = req.params;
+// ─── Background Poller ─────────────────────────────────────────────────────────
+function parseTime(s) {
+  if (!s) return null;
+  try { return new Date(s.trim().replace(' ', 'T')); } catch { return null; }
+}
 
-  broadcast({
-    type: 'campaign_finished',
-    batchId,
-    campaignId,
-    data: req.body,
-  });
+async function poll() {
+  try {
+    const campaigns = await getCampaigns();
+    const now = Date.now();
+    const window = CFG.pollMs * 2; // 2-minute fire window
 
-  res.json({ received: true });
-});
+    for (const c of campaigns) {
+      const trigger = (c['Run Trigger'] || '').trim();
+      const status  = (c['Status']      || '').trim();
 
-/**
- * GET /health
- */
-app.get('/health', (_req, res) => res.json({ status: 'ok', clients: clients.size }));
-
-// ─── Start ────────────────────────────────────────────────────────────────────
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Orchestrator listening on :${PORT}`);
-
-  if (config.schedulerEnabled) {
-    console.log(`Scheduler polling every ${config.schedulerPollMs / 1000}s`);
-
-    const runScan = async () => {
-      try {
-        const result = await scanAndTrigger(triggerWebhook, broadcast);
-        if (result.triggered > 0 || result.scheduledCompleted > 0) {
-          console.log(
-            `Scan: instant=${result.instantFired}, scheduled=${result.scheduledFired}, completed=${result.scheduledCompleted}`
-          );
+      if (trigger === 'Scheduler' && !status) {
+        const t = parseTime(c['test_time']);
+        if (!t) continue;
+        const diff = now - t.getTime();
+        if (diff >= 0 && diff <= window) {
+          console.log(`[poll] Firing row ${c.row_number}: ${c.subject}`);
+          await axios
+            .post(CFG.n8nWebhook, { row_number: c.row_number }, { timeout: 8_000 })
+            .catch(e => console.error(`[poll] Row ${c.row_number} error:`, e.message));
         }
-      } catch (err) {
-        console.error('Scheduler scan failed:', err.message);
       }
-    };
-
-    runScan();
-    setInterval(runScan, config.schedulerPollMs);
+    }
+  } catch (e) {
+    console.error('[poll] Error:', e.message);
   }
+}
+
+setInterval(poll, CFG.pollMs);
+poll();
+
+// ─── Catch-all → serve frontend ───────────────────────────────────────────────
+app.get('*', (_, res) =>
+  res.sendFile(path.join(__dirname, 'public', 'index.html'))
+);
+
+app.listen(CFG.port, () => {
+  console.log(`\n🚀  NxtWave Campaign Manager running on port ${CFG.port}`);
+  console.log(`📊  Sheet: https://docs.google.com/spreadsheets/d/${CFG.sheetId}`);
+  console.log(`⚡  Polling every ${CFG.pollMs / 1000}s\n`);
 });
